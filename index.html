@@ -1,71 +1,266 @@
 <!doctype html>
-if(!videoTrack) return;
-const caps = videoTrack.getCapabilities?.() || {}; let expCap = caps.exposureTime;
-if(!expCap && window.ImageCapture && imageCapture?.getPhotoCapabilities){
-try{
-const pc = await imageCapture.getPhotoCapabilities();
-if(pc.exposureTime?.min !== undefined){ expCap = { min: pc.exposureTime.min, max: pc.exposureTime.max, step: pc.exposureTime.step||1 }; }
-}catch(e){ log('getPhotoCapabilities: '+e.message); }
-}
-if(expCap){
-els.exposure.disabled=false; els.exposure.min=Math.max(0,expCap.min); els.exposure.max=expCap.max; els.exposure.step=expCap.step||1;
-els.expLabel.textContent=`(podporováno; rozsah ${expCap.min}–${expCap.max})`;
-try{ await videoTrack.applyConstraints({ advanced:[{ exposureMode:'manual' }] }); }catch{}
-const s=videoTrack.getSettings?.()||{};
-if(s.exposureTime){ els.exposure.value=s.exposureTime; els.curExp.textContent=fmtMs(s.exposureTime); }
-else { els.exposure.value=els.exposure.min; els.curExp.textContent='–'; }
-}else{
-els.exposure.disabled=true; els.expLabel.textContent='(expozice není podporována na této kameře/prohlížeči)'; els.curExp.textContent='–';
-}
-}
+<html lang="cs">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>Video Recorder — FPS / expozice / rozlišení</title>
+<meta name="theme-color" content="#0f172a" />
+<link rel="manifest" href="./manifest.webmanifest?v=1" />
+<link rel="apple-touch-icon" href="./assets/icons/icon-192.png" />
+<!-- volitelné: data-URL favicon, ať není 404 -->
+<link rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='2' fill='%230f172a'/%3E%3Ctext x='8' y='12' font-size='10' text-anchor='middle' fill='%23e2e8f0'%3E🎥%3C/text%3E%3C/svg%3E">
+<style>
+  :root{ --bg:#0b1220; --ui:#0f172a; --muted:#94a3b8; --text:#e2e8f0; --accent:#22c55e; --red:#ef4444; }
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:16px/1.4 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif}
+  .app{display:grid;grid-template-columns:1fr;gap:16px;max-width:1100px;margin:0 auto;padding:16px}
+  .panel{background:var(--ui);border-radius:16px;padding:14px;box-shadow:0 6px 24px rgba(0,0,0,.25)}
+  h1{margin:0 0 6px;font-size:20px}
+  label{display:block;font-size:13px;color:var(--muted);margin:10px 0 6px}
+  select,input,button{width:100%;background:#0c1a32;color:var(--text);border:1px solid #1f2a44;border-radius:10px;padding:10px 12px}
+  input[type=range]{padding:0}
+  .grid{display:grid;gap:10px}
+  .g2{grid-template-columns:1fr 1fr}
+  .row{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:end}
+  .btn{cursor:pointer;border:none}
+  .btn.primary{background:var(--accent)}
+  .btn.danger{background:var(--red)}
+  .hint{font-size:12px;color:var(--muted)}
+  .kbd{font-family:ui-monospace,Consolas,monospace;background:#0c1a32;border:1px solid #1f2a44;border-radius:6px;padding:2px 6px}
+  video{width:100%;max-height:60vh;background:#000;border-radius:14px}
+  .flex{display:flex;gap:10px;flex-wrap:wrap}
+  .pill{font-size:12px;color:var(--muted);background:#0c1a32;border:1px solid #1f2a44;padding:6px 8px;border-radius:999px}
+  .right{justify-content:flex-end}
+  .ok{color:#86efac}.warn{color:#fbbf24}.err{color:#f87171}
+  .mono{font-family:ui-monospace,Consolas,monospace}
+</style>
+</head>
+<body>
+  <div class="app">
+    <div class="panel">
+      <h1>🎥 Nahrávání videa — FPS / expozice / rozlišení</h1>
+      <div class="grid g2">
+        <div>
+          <label for="camera">Kamera</label>
+          <select id="camera"></select>
+        </div>
+        <div>
+          <label for="mime">Formát záznamu</label>
+          <select id="mime">
+            <option value="video/webm;codecs=vp9">webm; VP9</option>
+            <option value="video/webm;codecs=vp8" selected>webm; VP8</option>
+            <option value="video/webm;codecs=av1">webm; AV1 (pokud je)</option>
+            <option value="video/webm">webm (auto)</option>
+          </select>
+        </div>
+      </div>
 
+      <div class="grid g2">
+        <div>
+          <label for="resolution">Rozlišení (šířka × výška)</label>
+          <select id="resolution">
+            <option value="3840x2160">3840 × 2160 (4K)</option>
+            <option value="2560x1440">2560 × 1440 (QHD)</option>
+            <option value="1920x1080" selected>1920 × 1080 (FHD)</option>
+            <option value="1280x720">1280 × 720 (HD)</option>
+            <option value="640x480">640 × 480 (VGA)</option>
+            <option value="custom">Vlastní…</option>
+          </select>
+        </div>
+        <div class="grid g2" id="customRes" style="display:none">
+          <div>
+            <label for="w">Šířka [px]</label>
+            <input id="w" type="number" min="160" step="1" value="1920" />
+          </div>
+          <div>
+            <label for="h">Výška [px]</label>
+            <input id="h" type="number" min="120" step="1" value="1080" />
+          </div>
+        </div>
+      </div>
 
-async function applyExposure(){
-if(!videoTrack || els.exposure.disabled) return; const v = parseFloat(els.exposure.value);
-try{ await videoTrack.applyConstraints({ advanced:[{exposureMode:'manual', exposureTime:v}] }); els.curExp.textContent=fmtMs(v); setStatus('Expozice nastavena','ok'); }
-catch(e){ setStatus('Expozici nelze nastavit: '+e.message,'err'); log('applyExposure: '+e.message); }
-}
+      <div class="grid g2">
+        <div>
+          <label for="fps">Snímkovací frekvence (FPS)</label>
+          <input id="fps" type="number" min="1" max="240" step="1" value="30" />
+          <div class="hint">Tip: 24 / 25 / 30 / 50 / 60.</div>
+        </div>
+        <div>
+          <label for="exposure">Délka expozice <span id="expLabel" class="hint">(zjišťuji podporu…)</span></label>
+          <input id="exposure" type="range" min="0" max="0" step="1" value="0" disabled />
+          <div class="hint" id="expHint">Je-li podporováno, nastavuje manuální čas závěrky.</div>
+        </div>
+      </div>
 
+      <div class="row">
+        <button id="apply" class="btn">▶️ Spustit / Aktualizovat náhled</button>
+        <div class="flex">
+          <span class="pill">Stav: <span id="status" class="mono warn">čekám…</span></span>
+          <span class="pill">Aktivní: <span id="live" class="mono">–</span></span>
+          <span class="pill">Rozlišení: <span id="curRes" class="mono">–</span></span>
+          <span class="pill">FPS: <span id="curFps" class="mono">–</span></span>
+          <span class="pill">Expozice: <span id="curExp" class="mono">–</span></span>
+        </div>
+      </div>
+    </div>
 
-function startTimer(){ const start=Date.now(); sizeBytes=0; clearInterval(timerInt); timerInt=setInterval(()=>{ const s=Math.floor((Date.now()-start)/1000); const mm=String(Math.floor(s/60)).padStart(2,'0'); const ss=String(s%60).padStart(2,'0'); els.timer.textContent=`${mm}:${ss}`; els.size.textContent=fmtSize(sizeBytes); },250); }
-function stopTimer(){ clearInterval(timerInt); }
+    <div class="panel">
+      <video id="video" playsinline autoplay muted></video>
+      <div class="row" style="margin-top:8px">
+        <div class="flex">
+          <button id="recStart" class="btn primary">⏺️ Začít nahrávat</button>
+          <button id="recStop" class="btn danger" disabled>⏹️ Zastavit & uložit</button>
+        </div>
+        <div class="flex right">
+          <span class="pill">Délka: <span id="timer" class="mono">00:00</span></span>
+          <span class="pill">Velikost: <span id="size" class="mono">0 MB</span></span>
+        </div>
+      </div>
+      <div id="downloads" class="flex" style="margin-top:8px;flex-wrap:wrap"></div>
+    </div>
 
+    <div class="panel">
+      <h1>Nápověda & kompatibilita</h1>
+      <ul class="hint" style="margin:0 0 6px 16px">
+        <li>Otevři přes <span class="kbd">HTTPS</span> nebo <span class="kbd">http://localhost</span>. Z <span class="kbd">file://</span> / <span class="kbd">content://</span> kamera nefunguje.</li>
+        <li>Po spuštění povol přístup ke kameře (ikona zámku → Kamera: Povolit).</li>
+        <li>Nahrává se přes <span class="kbd">MediaRecorder</span> do <span class="kbd">.webm</span>.</li>
+      </ul>
+      <div id="log" class="mono hint" style="white-space:pre-wrap"></div>
+    </div>
+  </div>
 
-async function startRecording(){
-if(!stream) await startOrUpdate(); if(!stream) return; const mime=els.mime.value; let options={}; if(MediaRecorder.isTypeSupported?.(mime)) options.mimeType=mime;
-try{ recorder=new MediaRecorder(stream,options); }catch{ recorder=new MediaRecorder(stream); }
-chunks=[]; recorder.ondataavailable=e=>{ if(e.data?.size>0){ chunks.push(e.data); sizeBytes+=e.data.size; } };
-recorder.onstop=()=>{ stopTimer(); const blob=new Blob(chunks,{type:recorder.mimeType||'video/webm'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); const ts=new Date().toISOString().replace(/[:.]/g,'-'); a.href=url; a.download=`zaznam-${ts}.webm`; a.textContent=`⬇️ Uložit záznam (${(blob.size/1048576).toFixed(2)} MB)`; a.className='btn'; const wrap=document.createElement('div'); wrap.className='panel'; wrap.style.background='#0c1a32'; wrap.appendChild(a); els.downloads.prepend(wrap); setStatus('Záznam uložen','ok'); };
-recorder.start(300); startTimer(); els.recStart.disabled=true; els.recStop.disabled=false; setStatus('Nahrávám…','ok');
-}
+<script>
+(async function(){
+  const els = {
+    camera: document.getElementById('camera'), mime: document.getElementById('mime'),
+    resolution: document.getElementById('resolution'), customRes: document.getElementById('customRes'),
+    w: document.getElementById('w'), h: document.getElementById('h'), fps: document.getElementById('fps'),
+    exposure: document.getElementById('exposure'), expLabel: document.getElementById('expLabel'), expHint: document.getElementById('expHint'),
+    apply: document.getElementById('apply'), video: document.getElementById('video'),
+    recStart: document.getElementById('recStart'), recStop: document.getElementById('recStop'),
+    timer: document.getElementById('timer'), size: document.getElementById('size'), downloads: document.getElementById('downloads'),
+    status: document.getElementById('status'), live: document.getElementById('live'), curRes: document.getElementById('curRes'), curFps: document.getElementById('curFps'), curExp: document.getElementById('curExp'),
+    log: document.getElementById('log'),
+  };
 
+  let stream=null, videoTrack=null, recorder=null, chunks=[];
+  let timerInt=null, sizeBytes=0, imageCapture=null;
+  const isSecure = window.isSecureContext === true;
 
-function stopRecording(){ if(recorder && recorder.state!=='inactive'){ recorder.stop(); } els.recStart.disabled=false; els.recStop.disabled=true; setStatus('Zastaveno','ok'); }
+  function log(msg){ els.log.textContent += `${msg}\n`; }
+  function fmtMs(ms){ return `${(+ms).toFixed(1)} ms`; }
+  function fmtSize(b){ return (b/1048576).toFixed(2)+' MB'; }
+  function setStatus(text,cls='ok'){ els.status.textContent=text; els.status.className=`mono ${cls}`; }
 
+  async function listCameras(){
+    try{
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const cams = devices.filter(d => d.kind === 'videoinput');
+      els.camera.innerHTML = '';
+      cams.forEach((d,i)=>{
+        const opt=document.createElement('option'); opt.value=d.deviceId; opt.textContent=d.label||`Kamera ${i+1}`; els.camera.appendChild(opt);
+      });
+    }catch(e){ log('enumerateDevices: '+e.message); }
+  }
 
-// UI
-els.apply.addEventListener('click', startOrUpdate);
-els.resolution.addEventListener('change', ()=>{ els.customRes.style.display = els.resolution.value==='custom' ? 'grid' : 'none'; });
-els.exposure.addEventListener('input', applyExposure);
-els.recStart.addEventListener('click', startRecording);
-els.recStop.addEventListener('click', stopRecording);
+  function parseResolution(){
+    const v = els.resolution.value;
+    if(v==='custom'){ return { width:+els.w.value||1920, height:+els.h.value||1080 }; }
+    const [w,h]=v.split('x').map(Number); return { width:w, height:h };
+  }
 
+  async function startOrUpdate(){
+    if(!isSecure){ setStatus('Běží mimo HTTPS/localhost — prohlížeč blokuje kameru. Otevři stránku přes HTTPS.', 'err'); return; }
+    try{
+      const {width,height}=parseResolution(); const frameRate=parseFloat(els.fps.value)||30;
+      if(!stream){
+        const constraints={ audio:false, video:{ deviceId: els.camera.value ? { exact: els.camera.value } : undefined, width:{ideal:width}, height:{ideal:height}, frameRate:{ideal:frameRate} } };
+        stream=await navigator.mediaDevices.getUserMedia(constraints);
+        els.video.srcObject=stream; videoTrack=stream.getVideoTracks()[0];
+        try{ imageCapture=new ImageCapture(videoTrack); }catch{ imageCapture=null; }
+        await updateCapabilities();
+      }else{
+        await videoTrack.applyConstraints({ width:{ideal:width}, height:{ideal:height}, frameRate:{ideal:frameRate} });
+      }
+      updateLiveInfo(); setStatus('Náhled běží','ok');
+    }catch(e){
+      if(e.name==='NotAllowedError'){ setStatus('Přístup ke kameře byl zamítnut. Povol ho v nastavení webu (ikona zámku).','err'); }
+      else if(e.name==='NotFoundError'){ setStatus('Nebyla nalezena žádná kamera (nebo ji drží jiná aplikace).','err'); }
+      else if(e.name==='SecurityError'){ setStatus('Bezpečnostní blokace — často ne-HTTPS. Otevři přes HTTPS.','err'); }
+      else { setStatus('Chyba: '+e.message,'err'); }
+      log(`${e.name}: ${e.message}\n${e.stack||''}`);
+    }
+  }
 
-// Start – jen příprava UI
-if(!isSecure){ setStatus('Otevři přes HTTPS / localhost. Z „content://“ nebo „file://“ kamera nepojede.','err'); }
-else { setStatus('Klepni na „Spustit / Aktualizovat náhled“ a povol kameru.','warn'); }
+  function updateLiveInfo(){
+    if(!videoTrack){ els.live.textContent='–'; return; }
+    const s=videoTrack.getSettings();
+    els.live.textContent=videoTrack.readyState==='live'?'ANO':'NE';
+    els.curRes.textContent=(s.width&&s.height)?`${s.width}×${s.height}`:'–';
+    els.curFps.textContent=s.frameRate?`${s.frameRate.toFixed(1)}`:'–';
+  }
 
+  async function updateCapabilities(){
+    if(!videoTrack) return;
+    const caps = videoTrack.getCapabilities?.() || {}; let expCap = caps.exposureTime;
+    if(!expCap && window.ImageCapture && imageCapture?.getPhotoCapabilities){
+      try{
+        const pc = await imageCapture.getPhotoCapabilities();
+        if(pc.exposureTime?.min !== undefined){ expCap = { min: pc.exposureTime.min, max: pc.exposureTime.max, step: pc.exposureTime.step||1 }; }
+      }catch(e){ log('getPhotoCapabilities: '+e.message); }
+    }
+    if(expCap){
+      els.exposure.disabled=false; els.exposure.min=Math.max(0,expCap.min); els.exposure.max=expCap.max; els.exposure.step=expCap.step||1;
+      els.expLabel.textContent=`(podporováno; rozsah ${expCap.min}–${expCap.max})`;
+      try{ await videoTrack.applyConstraints({ advanced:[{ exposureMode:'manual' }] }); }catch{}
+      const s=videoTrack.getSettings?.()||{};
+      if(s.exposureTime){ els.exposure.value=s.exposureTime; els.curExp.textContent=fmtMs(s.exposureTime); }
+      else { els.exposure.value=els.exposure.min; els.curExp.textContent='–'; }
+    }else{
+      els.exposure.disabled=true; els.expLabel.textContent='(expozice není podporována na této kameře/prohlížeči)'; els.curExp.textContent='–';
+    }
+  }
 
-await listCameras();
-navigator.mediaDevices.addEventListener?.('devicechange', listCameras);
-setInterval(()=>{ if(videoTrack) updateLiveInfo(); }, 1000);
+  async function applyExposure(){
+    if(!videoTrack || els.exposure.disabled) return; const v = parseFloat(els.exposure.value);
+    try{ await videoTrack.applyConstraints({ advanced:[{exposureMode:'manual', exposureTime:v}] }); els.curExp.textContent=fmtMs(v); setStatus('Expozice nastavena','ok'); }
+    catch(e){ setStatus('Expozici nelze nastavit: '+e.message,'err'); log('applyExposure: '+e.message); }
+  }
 
+  function startTimer(){ const start=Date.now(); sizeBytes=0; clearInterval(timerInt); timerInt=setInterval(()=>{ const s=Math.floor((Date.now()-start)/1000); const mm=String(Math.floor(s/60)).padStart(2,'0'); const ss=String(s%60).padStart(2,'0'); els.timer.textContent=`${mm}:${ss}`; els.size.textContent=fmtSize(sizeBytes); },250); }
+  function stopTimer(){ clearInterval(timerInt); }
 
-// PWA: registrace service workeru
-if('serviceWorker' in navigator){
-try{ await navigator.serviceWorker.register('./service-worker.js?v=1'); }
-catch(e){ console.warn('SW register fail', e); }
-}
+  async function startRecording(){
+    if(!stream) await startOrUpdate(); if(!stream) return; const mime=els.mime.value; let options={}; if(MediaRecorder.isTypeSupported?.(mime)) options.mimeType=mime;
+    try{ recorder=new MediaRecorder(stream,options); }catch{ recorder=new MediaRecorder(stream); }
+    chunks=[]; recorder.ondataavailable=e=>{ if(e.data?.size>0){ chunks.push(e.data); sizeBytes+=e.data.size; } };
+    recorder.onstop=()=>{ stopTimer(); const blob=new Blob(chunks,{type:recorder.mimeType||'video/webm'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); const ts=new Date().toISOString().replace(/[:.]/g,'-'); a.href=url; a.download=`zaznam-${ts}.webm`; a.textContent=`⬇️ Uložit záznam (${(blob.size/1048576).toFixed(2)} MB)`; a.className='btn'; const wrap=document.createElement('div'); wrap.className='panel'; wrap.style.background='#0c1a32'; wrap.appendChild(a); els.downloads.prepend(wrap); setStatus('Záznam uložen','ok'); };
+    recorder.start(300); startTimer(); els.recStart.disabled=true; els.recStop.disabled=false; setStatus('Nahrávám…','ok');
+  }
+
+  function stopRecording(){ if(recorder && recorder.state!=='inactive'){ recorder.stop(); } els.recStart.disabled=false; els.recStop.disabled=true; setStatus('Zastaveno','ok'); }
+
+  // UI
+  els.apply.addEventListener('click', startOrUpdate);
+  els.resolution.addEventListener('change', ()=>{ els.customRes.style.display = els.resolution.value==='custom' ? 'grid' : 'none'; });
+  els.exposure.addEventListener('input', applyExposure);
+  els.recStart.addEventListener('click', startRecording);
+  els.recStop.addEventListener('click', stopRecording);
+
+  // Start – jen příprava UI
+  if(!isSecure){ setStatus('Otevři přes HTTPS / localhost. Z „content://“ nebo „file://“ kamera nepojede.','err'); }
+  else { setStatus('Klepni na „Spustit / Aktualizovat náhled“ a povol kameru.','warn'); }
+
+  await listCameras();
+  navigator.mediaDevices.addEventListener?.('devicechange', listCameras);
+  setInterval(()=>{ if(videoTrack) updateLiveInfo(); }, 1000);
+
+  // PWA: registrace service workeru
+  if('serviceWorker' in navigator){
+    try{ await navigator.serviceWorker.register('./service-worker.js?v=1'); }
+    catch(e){ console.warn('SW register fail', e); }
+  }
 })();
 </script>
 </body>
