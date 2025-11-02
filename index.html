@@ -1,0 +1,72 @@
+<!doctype html>
+if(!videoTrack) return;
+const caps = videoTrack.getCapabilities?.() || {}; let expCap = caps.exposureTime;
+if(!expCap && window.ImageCapture && imageCapture?.getPhotoCapabilities){
+try{
+const pc = await imageCapture.getPhotoCapabilities();
+if(pc.exposureTime?.min !== undefined){ expCap = { min: pc.exposureTime.min, max: pc.exposureTime.max, step: pc.exposureTime.step||1 }; }
+}catch(e){ log('getPhotoCapabilities: '+e.message); }
+}
+if(expCap){
+els.exposure.disabled=false; els.exposure.min=Math.max(0,expCap.min); els.exposure.max=expCap.max; els.exposure.step=expCap.step||1;
+els.expLabel.textContent=`(podporováno; rozsah ${expCap.min}–${expCap.max})`;
+try{ await videoTrack.applyConstraints({ advanced:[{ exposureMode:'manual' }] }); }catch{}
+const s=videoTrack.getSettings?.()||{};
+if(s.exposureTime){ els.exposure.value=s.exposureTime; els.curExp.textContent=fmtMs(s.exposureTime); }
+else { els.exposure.value=els.exposure.min; els.curExp.textContent='–'; }
+}else{
+els.exposure.disabled=true; els.expLabel.textContent='(expozice není podporována na této kameře/prohlížeči)'; els.curExp.textContent='–';
+}
+}
+
+
+async function applyExposure(){
+if(!videoTrack || els.exposure.disabled) return; const v = parseFloat(els.exposure.value);
+try{ await videoTrack.applyConstraints({ advanced:[{exposureMode:'manual', exposureTime:v}] }); els.curExp.textContent=fmtMs(v); setStatus('Expozice nastavena','ok'); }
+catch(e){ setStatus('Expozici nelze nastavit: '+e.message,'err'); log('applyExposure: '+e.message); }
+}
+
+
+function startTimer(){ const start=Date.now(); sizeBytes=0; clearInterval(timerInt); timerInt=setInterval(()=>{ const s=Math.floor((Date.now()-start)/1000); const mm=String(Math.floor(s/60)).padStart(2,'0'); const ss=String(s%60).padStart(2,'0'); els.timer.textContent=`${mm}:${ss}`; els.size.textContent=fmtSize(sizeBytes); },250); }
+function stopTimer(){ clearInterval(timerInt); }
+
+
+async function startRecording(){
+if(!stream) await startOrUpdate(); if(!stream) return; const mime=els.mime.value; let options={}; if(MediaRecorder.isTypeSupported?.(mime)) options.mimeType=mime;
+try{ recorder=new MediaRecorder(stream,options); }catch{ recorder=new MediaRecorder(stream); }
+chunks=[]; recorder.ondataavailable=e=>{ if(e.data?.size>0){ chunks.push(e.data); sizeBytes+=e.data.size; } };
+recorder.onstop=()=>{ stopTimer(); const blob=new Blob(chunks,{type:recorder.mimeType||'video/webm'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); const ts=new Date().toISOString().replace(/[:.]/g,'-'); a.href=url; a.download=`zaznam-${ts}.webm`; a.textContent=`⬇️ Uložit záznam (${(blob.size/1048576).toFixed(2)} MB)`; a.className='btn'; const wrap=document.createElement('div'); wrap.className='panel'; wrap.style.background='#0c1a32'; wrap.appendChild(a); els.downloads.prepend(wrap); setStatus('Záznam uložen','ok'); };
+recorder.start(300); startTimer(); els.recStart.disabled=true; els.recStop.disabled=false; setStatus('Nahrávám…','ok');
+}
+
+
+function stopRecording(){ if(recorder && recorder.state!=='inactive'){ recorder.stop(); } els.recStart.disabled=false; els.recStop.disabled=true; setStatus('Zastaveno','ok'); }
+
+
+// UI
+els.apply.addEventListener('click', startOrUpdate);
+els.resolution.addEventListener('change', ()=>{ els.customRes.style.display = els.resolution.value==='custom' ? 'grid' : 'none'; });
+els.exposure.addEventListener('input', applyExposure);
+els.recStart.addEventListener('click', startRecording);
+els.recStop.addEventListener('click', stopRecording);
+
+
+// Start – jen příprava UI
+if(!isSecure){ setStatus('Otevři přes HTTPS / localhost. Z „content://“ nebo „file://“ kamera nepojede.','err'); }
+else { setStatus('Klepni na „Spustit / Aktualizovat náhled“ a povol kameru.','warn'); }
+
+
+await listCameras();
+navigator.mediaDevices.addEventListener?.('devicechange', listCameras);
+setInterval(()=>{ if(videoTrack) updateLiveInfo(); }, 1000);
+
+
+// PWA: registrace service workeru
+if('serviceWorker' in navigator){
+try{ await navigator.serviceWorker.register('./service-worker.js?v=1'); }
+catch(e){ console.warn('SW register fail', e); }
+}
+})();
+</script>
+</body>
+</html>
