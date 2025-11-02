@@ -28,7 +28,6 @@
   .right{justify-content:flex-end}
   .ok{color:#86efac}.warn{color:#fbbf24}.err{color:#f87171}
   .mono{font-family:ui-monospace,Consolas,monospace}
-  fieldset[disabled] { opacity:.6 }
 </style>
 </head>
 <body>
@@ -78,9 +77,11 @@
 
       <div class="grid g2">
         <div>
-          <label for="fps">Snímkovací frekvence (FPS)</label>
-          <input id="fps" type="number" min="1" max="240" step="1" value="30" />
-          <div class="hint">Tip: 24 / 25 / 30 / 50 / 60. Na mobilech mohou být limity kamery.</div>
+          <label for="fpsSel">Snímkovací frekvence (FPS)</label>
+          <select id="fpsSel">
+            <option value="auto" selected>Auto (doporučeno)</option>
+          </select>
+          <div class="hint" id="fpsHint">Možnosti se načtou po spuštění náhledu podle schopností kamery.</div>
         </div>
         <div>
           <label for="exposure">Délka expozice <span id="expLabel" class="hint">(zjišťuji podporu…)</span></label>
@@ -104,10 +105,10 @@
     <div class="panel">
       <video id="video" playsinline autoplay muted></video>
       <div class="row" style="margin-top:8px">
-        <fieldset id="controls" class="flex">
+        <div class="flex">
           <button id="recStart" class="btn primary">⏺️ Začít nahrávat</button>
           <button id="recStop" class="btn danger" disabled>⏹️ Zastavit & uložit</button>
-        </fieldset>
+        </div>
         <div class="flex right">
           <span class="pill">Délka: <span id="timer" class="mono">00:00</span></span>
           <span class="pill">Velikost: <span id="size" class="mono">0 MB</span></span>
@@ -119,7 +120,7 @@
     <div class="panel">
       <h1>Nápověda & kompatibilita</h1>
       <ul class="hint" style="margin:0 0 6px 16px">
-        <li>Pro změnu kamery/FPS/rozlišení vždy klikni na <span class="kbd">Spustit / Aktualizovat náhled</span> (stream se obnoví).</li>
+        <li>Po změně FPS/kamery/rozlišení klikni na <span class="kbd">Spustit / Aktualizovat náhled</span> (stream se znovu vyjedná).</li>
         <li>Otevři přes <span class="kbd">HTTPS</span> nebo <span class="kbd">http://localhost</span>. Z <span class="kbd">file://</span> / <span class="kbd">content://</span> kamera nefunguje.</li>
       </ul>
       <div id="log" class="mono hint" style="white-space:pre-wrap"></div>
@@ -135,7 +136,8 @@
     customRes: document.getElementById('customRes'),
     w: document.getElementById('w'),
     h: document.getElementById('h'),
-    fps: document.getElementById('fps'),
+    fpsSel: document.getElementById('fpsSel'),
+    fpsHint: document.getElementById('fpsHint'),
     exposure: document.getElementById('exposure'),
     expLabel: document.getElementById('expLabel'),
     expHint: document.getElementById('expHint'),
@@ -143,7 +145,6 @@
     video: document.getElementById('video'),
     recStart: document.getElementById('recStart'),
     recStop: document.getElementById('recStop'),
-    controls: document.getElementById('controls'),
     timer: document.getElementById('timer'),
     size: document.getElementById('size'),
     downloads: document.getElementById('downloads'),
@@ -158,19 +159,12 @@
   let stream=null, videoTrack=null, recorder=null, chunks=[];
   let timerInt=null, sizeBytes=0, imageCapture=null;
   const isSecure = window.isSecureContext === true;
+  const COMMON_FPS = [15, 24, 25, 30, 48, 50, 60, 90, 120, 144, 240];
 
   function log(msg){ els.log.textContent += `${msg}\n`; }
   function fmtMs(ms){ return `${(+ms).toFixed(1)} ms`; }
   function fmtSize(b){ return (b/1048576).toFixed(2)+' MB'; }
   function setStatus(text,cls='ok'){ els.status.textContent=text; els.status.className=`mono ${cls}`; }
-  function disableStreamControls(disabled){
-    els.apply.disabled = disabled;
-    els.camera.disabled = disabled;
-    els.resolution.disabled = disabled;
-    els.w.disabled = disabled || els.customRes.style.display!=='grid';
-    els.h.disabled = disabled || els.customRes.style.display!=='grid';
-    els.fps.disabled = disabled;
-  }
 
   async function listCameras(){
     try{
@@ -189,91 +183,126 @@
   }
 
   function parseResolution(){
-    const val = els.resolution.value;
-    if(val==='custom'){ return { width:+els.w.value||1920, height:+els.h.value||1080 }; }
-    const [w,h] = val.split('x').map(Number);
-    return { width:w, height:h };
+    const v = els.resolution.value;
+    if(v==='custom'){ return { width:+els.w.value||1920, height:+els.h.value||1080 }; }
+    const [w,h]=v.split('x').map(Number); return { width:w, height:h };
   }
 
   function stopStream(){
-    try{
-      if(stream){ stream.getTracks().forEach(t=>t.stop()); }
-    }catch{}
+    try{ if(stream){ stream.getTracks().forEach(t=>t.stop()); } }catch{}
     stream=null; videoTrack=null; imageCapture=null;
     els.video.srcObject=null;
   }
 
-  async function tryGetUserMedia(seq){
-    // postupná kaskáda constraintů – co projde, to bereme
-    for(const c of seq){
-      try{ return await navigator.mediaDevices.getUserMedia(c); }
-      catch(e){ log(`getUserMedia fail variant: ${e.name}: ${e.message}`); }
-    }
-    throw new Error('Žádná varianta constraints neprošla');
-  }
+  function buildConstraints(){
+    const {width,height}=parseResolution();
+    const deviceId = els.camera.value ? { exact: els.camera.value } : undefined;
+    const fpsVal = els.fpsSel.value;
 
-  function buildConstraintVariants(){
-    const {width, height} = parseResolution();
-    const fps = Math.max(1, Math.min(240, Math.floor(+els.fps.value||30)));
-    const dev = els.camera.value ? { exact: els.camera.value } : undefined;
+    // FPS: „auto“ -> ideal (ne exact), jinak exact
+    const fpsConstraint = fpsVal==='auto' ? { ideal: 30 } : { exact: Number(fpsVal) };
 
-    const strict = {
-      audio:false, video:{
-        deviceId: dev, width:{ exact: width }, height:{ exact: height }, frameRate:{ exact: fps }
+    // Primárně zkusíme přesné rozlišení; když neprojde, prohlížeč sám degraduje
+    return {
+      audio:false,
+      video:{
+        deviceId,
+        width:{ ideal: width },
+        height:{ ideal: height },
+        frameRate: fpsConstraint
       }
     };
-    const semi = {
-      audio:false, video:{
-        deviceId: dev, width:{ ideal: width }, height:{ ideal: height },
-        frameRate:{ ideal: fps, max: fps }
-      }
-    };
-    const soft = {
-      audio:false, video:{
-        deviceId: dev, width:{ min: 160, ideal: width }, height:{ min: 120, ideal: height },
-        frameRate:{ min: 1, ideal: fps }
-      }
-    };
-    return [strict, semi, soft];
   }
 
   async function startOrUpdate(){
     if(!isSecure){
-      setStatus('Běží mimo HTTPS/localhost — prohlížeč blokuje kameru. Otevři stránku přes HTTPS.','err');
-      return;
+      setStatus('Běží mimo HTTPS/localhost — prohlížeč blokuje kameru. Otevři přes HTTPS.','err'); return;
     }
     if(recorder && recorder.state==='recording'){
-      setStatus('Zastav nahrávání, pak měň kameru/FPS/rozlišení.','warn');
-      return;
+      setStatus('Zastav nahrávání, pak měň FPS/kameru/rozlišení.','warn'); return;
     }
     setStatus('Spouštím stream…','warn');
     stopStream();
 
     try{
-      const variants = buildConstraintVariants();
-      stream = await tryGetUserMedia(variants);
+      const constraints = buildConstraints();
+      stream = await navigator.mediaDevices.getUserMedia(constraints);
       els.video.srcObject = stream;
       videoTrack = stream.getVideoTracks()[0];
-
       try{ imageCapture = new ImageCapture(videoTrack); }catch{ imageCapture=null; }
+
+      await populateFpsOptions();   // → sem patří autodetekce
       await updateCapabilities();
-      await listCameras(); // po povolení se ukážou názvy
+      await listCameras();
 
       updateLiveInfo();
       setStatus('Náhled běží','ok');
     }catch(e){
       setStatus('Chyba: '+e.message,'err');
-      log(e.stack||e.message);
+      log(`${e.name}: ${e.message}\n${e.stack||''}`);
       stopStream();
     }
   }
 
   function updateLiveInfo(){
     if(!videoTrack){ els.live.textContent='–'; return; }
-    const s = videoTrack.getSettings();
+    const s=videoTrack.getSettings();
     els.live.textContent = videoTrack.readyState==='live' ? 'ANO' : 'NE';
-    els.curRes.textContent = (s.width&&s.height)? `${s.width}×${s.height}` : '–';
+    els.curRes.textContent = (s.width&&s.height) ? `${s.width}×${s.height}` : '–';
     els.curFps.textContent = s.frameRate ? `${s.frameRate.toFixed(1)}` : '–';
+  }
+
+  async function populateFpsOptions(){
+    // 1) zkus capabilities.range
+    let supported = [];
+    try{
+      const caps = videoTrack?.getCapabilities?.();
+      if(caps?.frameRate && Number.isFinite(caps.frameRate.min) && Number.isFinite(caps.frameRate.max)){
+        const {min,max} = caps.frameRate;
+        supported = COMMON_FPS.filter(f => f >= Math.ceil(min-0.5) && f <= Math.floor(max+0.5));
+        log(`FPS capabilities min=${min}, max=${max} → ${supported.join(', ')}`);
+      }
+    }catch(e){ log('getCapabilities frameRate: '+e.message); }
+
+    // 2) fallback: „tiché“ otestování běžných FPS (applyConstraints), jen když nic z caps
+    if(!supported.length && videoTrack?.applyConstraints){
+      const orig = videoTrack.getSettings().frameRate;
+      for(const f of COMMON_FPS){
+        try{
+          await videoTrack.applyConstraints({ frameRate: { exact: f } });
+          const s = videoTrack.getSettings();
+          if (Math.abs((s.frameRate||0) - f) < 0.75) supported.push(f);
+        }catch{}
+      }
+      // vrať zhruba původní fps
+      try{ await videoTrack.applyConstraints({ frameRate: { ideal: orig||30 } }); }catch{}
+      // odstranění duplicit & seřazení
+      supported = Array.from(new Set(supported)).sort((a,b)=>a-b);
+      log(`FPS proběh test → ${supported.join(', ') || '(nic)'}`);
+    }
+
+    // 3) naplň select
+    const sel = els.fpsSel.value;
+    els.fpsSel.innerHTML = '<option value="auto">Auto (doporučeno)</option>';
+    (supported.length ? supported : [24,25,30,50,60]).forEach(f=>{
+      const o=document.createElement('option');
+      o.value=String(f); o.textContent=`${f}`;
+      els.fpsSel.appendChild(o);
+    });
+
+    // zkus zachovat volbu pokud dává smysl
+    if (Array.from(els.fpsSel.options).some(o=>o.value===sel)) {
+      els.fpsSel.value = sel;
+    } else {
+      els.fpsSel.value = 'auto';
+    }
+
+    // hint
+    if(supported.length){
+      els.fpsHint.textContent = 'Načtené možnosti z kamery.';
+    }else{
+      els.fpsHint.textContent = 'Používám výchozí sadu (detekce FPS nepodporována).';
+    }
   }
 
   async function updateCapabilities(){
@@ -320,6 +349,7 @@
     }
   }
 
+  // nahrávání
   function startTimer(){
     const start=Date.now(); sizeBytes=0;
     clearInterval(timerInt);
@@ -339,7 +369,7 @@
 
     let options={}; const mime=els.mime.value;
     if(MediaRecorder.isTypeSupported?.(mime)) options.mimeType=mime;
-    try{ recorder=new MediaRecorder(stream, options); }
+    try{ recorder=new MediaRecorder(stream,options); }
     catch{ recorder=new MediaRecorder(stream); }
 
     chunks=[];
@@ -356,13 +386,11 @@
       const wrap=document.createElement('div'); wrap.className='panel'; wrap.style.background='#0c1a32'; wrap.appendChild(a);
       els.downloads.prepend(wrap);
       setStatus('Záznam uložen','ok');
-      disableStreamControls(false);
     };
     recorder.start(300);
     startTimer();
     els.recStart.disabled=true; els.recStop.disabled=false;
     setStatus('Nahrávám…','ok');
-    disableStreamControls(true); // během záznamu neměň stream
   }
 
   function stopRecording(){
@@ -374,16 +402,10 @@
   // UI
   els.apply.addEventListener('click', startOrUpdate);
   els.resolution.addEventListener('change', ()=>{ els.customRes.style.display = els.resolution.value==='custom' ? 'grid' : 'none'; });
+  els.fpsSel.addEventListener('change', ()=> setStatus('Změna FPS připravena — stiskni „Spustit / Aktualizovat náhled“.','warn'));
   els.exposure.addEventListener('input', applyExposure);
   els.recStart.addEventListener('click', startRecording);
   els.recStop.addEventListener('click', stopRecording);
-
-  // pomůcka: změna kamery/FPS/rozlišení jen zvýrazní, že je třeba „Spustit/Aktualizovat“
-  ['camera','fps','resolution','w','h'].forEach(id=>{
-    const el = document.getElementById(id);
-    el?.addEventListener('change', ()=> setStatus('Změna připravena — stiskni „Spustit / Aktualizovat náhled“.','warn'));
-    el?.addEventListener('input', ()=> setStatus('Změna připravena — stiskni „Spustit / Aktualizovat náhled“.','warn'));
-  });
 
   // Start – jen příprava UI
   if(!isSecure){ setStatus('Otevři přes HTTPS / localhost. Z „content://“ nebo „file://“ kamera nepojede.','err'); }
