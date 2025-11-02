@@ -16,6 +16,7 @@
   input[type=range]{padding:0}
   .grid{display:grid;gap:10px}
   .g2{grid-template-columns:1fr 1fr}
+  .g3{grid-template-columns:1fr 1fr 1fr}
   .row{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:end}
   .btn{cursor:pointer;border:none}
   .btn.primary{background:var(--accent)}
@@ -28,6 +29,8 @@
   .right{justify-content:flex-end}
   .ok{color:#86efac}.warn{color:#fbbf24}.err{color:#f87171}
   .mono{font-family:ui-monospace,Consolas,monospace}
+  .inline{display:flex;gap:8px;align-items:center}
+  fieldset[disabled]{opacity:.6}
 </style>
 </head>
 <body>
@@ -75,30 +78,50 @@
         </div>
       </div>
 
-      <div class="grid g2">
+      <div class="grid g3">
         <div>
           <label for="fpsSel">Snímkovací frekvence (FPS)</label>
           <select id="fpsSel">
             <option value="auto" selected>Auto (doporučeno)</option>
           </select>
-          <div class="hint" id="fpsHint">Možnosti se načtou po spuštění náhledu podle schopností kamery.</div>
+          <div class="hint" id="fpsHint">Možnosti se načtou po spuštění náhledu podle schopností kamery / testu.</div>
         </div>
+        <div>
+          <label for="fpsCustom">Vlastní FPS</label>
+          <div class="inline">
+            <input id="fpsCustom" type="number" min="1" max="1200" step="1" placeholder="např. 1000" />
+            <button id="testCustom" class="btn">Otestovat</button>
+          </div>
+          <div class="hint">Rychlý test, zda kamera umí přesné FPS v aktuálním režimu.</div>
+        </div>
+        <div>
+          <label>&nbsp;</label>
+          <div class="inline">
+            <input id="preferMaxFps" type="checkbox" />
+            <label for="preferMaxFps" class="hint">Preferovat max FPS (snížit rozlišení, vypnout manuální expozici)</label>
+          </div>
+          <button id="findMax" class="btn" style="margin-top:8px">Najít maximum</button>
+        </div>
+      </div>
+
+      <div class="grid g2" style="margin-top:6px">
         <div>
           <label for="exposure">Délka expozice <span id="expLabel" class="hint">(zjišťuji podporu…)</span></label>
           <input id="exposure" type="range" min="0" max="0" step="1" value="0" disabled />
           <div class="hint" id="expHint">Je-li podporováno, nastavuje manuální čas závěrky.</div>
         </div>
+        <div style="align-self:end">
+          <button id="apply" class="btn">▶️ Spustit / Aktualizovat náhled</button>
+          <div class="hint">Po změně parametrů vždy stiskni.</div>
+        </div>
       </div>
 
-      <div class="row">
-        <button id="apply" class="btn">▶️ Spustit / Aktualizovat náhled</button>
-        <div class="flex">
-          <span class="pill">Stav: <span id="status" class="mono warn">čekám…</span></span>
-          <span class="pill">Aktivní: <span id="live" class="mono">–</span></span>
-          <span class="pill">Rozlišení: <span id="curRes" class="mono">–</span></span>
-          <span class="pill">FPS: <span id="curFps" class="mono">–</span></span>
-          <span class="pill">Expozice: <span id="curExp" class="mono">–</span></span>
-        </div>
+      <div class="flex" style="margin-top:8px">
+        <span class="pill">Stav: <span id="status" class="mono warn">čekám…</span></span>
+        <span class="pill">Aktivní: <span id="live" class="mono">–</span></span>
+        <span class="pill">Rozlišení: <span id="curRes" class="mono">–</span></span>
+        <span class="pill">FPS: <span id="curFps" class="mono">–</span></span>
+        <span class="pill">Expozice: <span id="curExp" class="mono">–</span></span>
       </div>
     </div>
 
@@ -118,10 +141,10 @@
     </div>
 
     <div class="panel">
-      <h1>Nápověda & kompatibilita</h1>
+      <h1>Nápověda & poznámky</h1>
       <ul class="hint" style="margin:0 0 6px 16px">
-        <li>Po změně FPS/kamery/rozlišení klikni na <span class="kbd">Spustit / Aktualizovat náhled</span> (stream se znovu vyjedná).</li>
-        <li>Otevři přes <span class="kbd">HTTPS</span> nebo <span class="kbd">http://localhost</span>. Z <span class="kbd">file://</span> / <span class="kbd">content://</span> kamera nefunguje.</li>
+        <li>Web API vysoká FPS často umožní jen při nízkém rozlišení a auto-expozici. Použij „Preferovat max FPS“.</li>
+        <li>V „FPS:“ vidíš skutečné číslo z <span class="kbd">getSettings()</span>, tj. co kamera opravdu posílá.</li>
       </ul>
       <div id="log" class="mono hint" style="white-space:pre-wrap"></div>
     </div>
@@ -138,6 +161,10 @@
     h: document.getElementById('h'),
     fpsSel: document.getElementById('fpsSel'),
     fpsHint: document.getElementById('fpsHint'),
+    fpsCustom: document.getElementById('fpsCustom'),
+    testCustom: document.getElementById('testCustom'),
+    preferMaxFps: document.getElementById('preferMaxFps'),
+    findMax: document.getElementById('findMax'),
     exposure: document.getElementById('exposure'),
     expLabel: document.getElementById('expLabel'),
     expHint: document.getElementById('expHint'),
@@ -159,7 +186,9 @@
   let stream=null, videoTrack=null, recorder=null, chunks=[];
   let timerInt=null, sizeBytes=0, imageCapture=null;
   const isSecure = window.isSecureContext === true;
-  const COMMON_FPS = [15, 24, 25, 30, 48, 50, 60, 90, 120, 144, 240];
+
+  // Rozšířený seznam kandidátů až do 1200 fps
+  const FPS_CANDIDATES = [15, 24, 25, 30, 48, 50, 60, 90, 100, 120, 144, 200, 240, 300, 360, 400, 480, 600, 720, 800, 960, 1000, 1200];
 
   function log(msg){ els.log.textContent += `${msg}\n`; }
   function fmtMs(ms){ return `${(+ms).toFixed(1)} ms`; }
@@ -195,32 +224,33 @@
   }
 
   function buildConstraints(){
-    const {width,height}=parseResolution();
+    const preferMax = els.preferMaxFps.checked;
+    const {width,height} = preferMax ? {width:320,height:240} : parseResolution();
     const deviceId = els.camera.value ? { exact: els.camera.value } : undefined;
-    const fpsVal = els.fpsSel.value;
 
-    // FPS: „auto“ -> ideal (ne exact), jinak exact
-    const fpsConstraint = fpsVal==='auto' ? { ideal: 30 } : { exact: Number(fpsVal) };
+    let frameRate;
+    if(els.fpsSel.value==='auto'){
+      frameRate = preferMax ? { min: 120, ideal: 480, max: 1200 } : { ideal: 30 };
+    }else{
+      const f = Number(els.fpsSel.value);
+      frameRate = preferMax ? { min: f, ideal: f, max: f } : { exact: f };
+    }
 
-    // Primárně zkusíme přesné rozlišení; když neprojde, prohlížeč sám degraduje
     return {
       audio:false,
       video:{
         deviceId,
         width:{ ideal: width },
         height:{ ideal: height },
-        frameRate: fpsConstraint
+        frameRate
       }
     };
   }
 
   async function startOrUpdate(){
-    if(!isSecure){
-      setStatus('Běží mimo HTTPS/localhost — prohlížeč blokuje kameru. Otevři přes HTTPS.','err'); return;
-    }
-    if(recorder && recorder.state==='recording'){
-      setStatus('Zastav nahrávání, pak měň FPS/kameru/rozlišení.','warn'); return;
-    }
+    if(!isSecure){ setStatus('Běží mimo HTTPS/localhost — prohlížeč blokuje kameru. Otevři přes HTTPS.','err'); return; }
+    if(recorder && recorder.state==='recording'){ setStatus('Zastav nahrávání, pak měň FPS/kameru/rozlišení.','warn'); return; }
+
     setStatus('Spouštím stream…','warn');
     stopStream();
 
@@ -231,10 +261,10 @@
       videoTrack = stream.getVideoTracks()[0];
       try{ imageCapture = new ImageCapture(videoTrack); }catch{ imageCapture=null; }
 
-      await populateFpsOptions();   // → sem patří autodetekce
+      await populateFpsOptions();   // autodetekce FPS
       await updateCapabilities();
-      await listCameras();
 
+      await listCameras();
       updateLiveInfo();
       setStatus('Náhled běží','ok');
     }catch(e){
@@ -253,56 +283,45 @@
   }
 
   async function populateFpsOptions(){
-    // 1) zkus capabilities.range
     let supported = [];
+    // 1) Podle capabilities
     try{
       const caps = videoTrack?.getCapabilities?.();
-      if(caps?.frameRate && Number.isFinite(caps.frameRate.min) && Number.isFinite(caps.frameRate.max)){
-        const {min,max} = caps.frameRate;
-        supported = COMMON_FPS.filter(f => f >= Math.ceil(min-0.5) && f <= Math.floor(max+0.5));
-        log(`FPS capabilities min=${min}, max=${max} → ${supported.join(', ')}`);
+      if(caps?.frameRate){
+        const {min, max} = caps.frameRate;
+        if(Number.isFinite(min) && Number.isFinite(max)){
+          supported = FPS_CANDIDATES.filter(f => f >= Math.ceil(min-0.5) && f <= Math.floor(max+0.5));
+          log(`FPS capabilities: min=${min}, max=${max} → ${supported.join(', ')}`);
+        }
       }
     }catch(e){ log('getCapabilities frameRate: '+e.message); }
 
-    // 2) fallback: „tiché“ otestování běžných FPS (applyConstraints), jen když nic z caps
+    // 2) Fallback – aktivní test kandidátů
     if(!supported.length && videoTrack?.applyConstraints){
       const orig = videoTrack.getSettings().frameRate;
-      for(const f of COMMON_FPS){
+      for(const f of FPS_CANDIDATES){
         try{
           await videoTrack.applyConstraints({ frameRate: { exact: f } });
           const s = videoTrack.getSettings();
-          if (Math.abs((s.frameRate||0) - f) < 0.75) supported.push(f);
+          if (Math.abs((s.frameRate||0) - f) < 0.8) supported.push(f);
         }catch{}
       }
-      // vrať zhruba původní fps
+      // návrat k přibližnému původnímu fps
       try{ await videoTrack.applyConstraints({ frameRate: { ideal: orig||30 } }); }catch{}
-      // odstranění duplicit & seřazení
       supported = Array.from(new Set(supported)).sort((a,b)=>a-b);
-      log(`FPS proběh test → ${supported.join(', ') || '(nic)'}`);
+      log(`FPS test: ${supported.join(', ') || '(nic nenalezeno)'}`);
     }
 
-    // 3) naplň select
-    const sel = els.fpsSel.value;
+    // 3) Naplnění selectu
+    const prev = els.fpsSel.value;
     els.fpsSel.innerHTML = '<option value="auto">Auto (doporučeno)</option>';
     (supported.length ? supported : [24,25,30,50,60]).forEach(f=>{
-      const o=document.createElement('option');
-      o.value=String(f); o.textContent=`${f}`;
-      els.fpsSel.appendChild(o);
+      const o=document.createElement('option'); o.value=String(f); o.textContent=String(f); els.fpsSel.appendChild(o);
     });
+    // udrž volbu, jinak auto
+    if (Array.from(els.fpsSel.options).some(o=>o.value===prev)) els.fpsSel.value = prev; else els.fpsSel.value = 'auto';
 
-    // zkus zachovat volbu pokud dává smysl
-    if (Array.from(els.fpsSel.options).some(o=>o.value===sel)) {
-      els.fpsSel.value = sel;
-    } else {
-      els.fpsSel.value = 'auto';
-    }
-
-    // hint
-    if(supported.length){
-      els.fpsHint.textContent = 'Načtené možnosti z kamery.';
-    }else{
-      els.fpsHint.textContent = 'Používám výchozí sadu (detekce FPS nepodporována).';
-    }
+    els.fpsHint.textContent = supported.length ? 'Načtené možnosti z kamery/testu.' : 'Používám výchozí sadu (detekce FPS nepodporována).';
   }
 
   async function updateCapabilities(){
@@ -319,7 +338,7 @@
       }catch(e){ log('getPhotoCapabilities: '+e.message); }
     }
 
-    if(expCap){
+    if(expCap && !els.preferMaxFps.checked){ // při „max FPS“ často nutné nechat auto expozici
       els.exposure.disabled=false;
       els.exposure.min=Math.max(0,expCap.min);
       els.exposure.max=expCap.max;
@@ -331,21 +350,44 @@
       else { els.exposure.value=els.exposure.min; els.curExp.textContent='–'; }
     }else{
       els.exposure.disabled=true;
-      els.expLabel.textContent='(expozice není podporována na této kameře/prohlížeči)';
+      els.expLabel.textContent= els.preferMaxFps.checked ? '(expozice: auto kvůli max FPS)' : '(expozice není podporována na této kameře/prohlížeči)';
       els.curExp.textContent='–';
     }
   }
 
-  async function applyExposure(){
-    if(!videoTrack || els.exposure.disabled) return;
-    const v = parseFloat(els.exposure.value);
+  // --- Testy FPS ---
+  async function testExactFps(f){
+    if(!videoTrack?.applyConstraints) return false;
     try{
-      await videoTrack.applyConstraints({ advanced:[{exposureMode:'manual', exposureTime:v}] });
-      els.curExp.textContent = fmtMs(v);
-      setStatus('Expozice nastavena','ok');
-    }catch(e){
-      setStatus('Expozici nelze nastavit: '+e.message,'err');
-      log('applyExposure: '+e.message);
+      await videoTrack.applyConstraints({ frameRate:{ exact: f } });
+      const s = videoTrack.getSettings();
+      return Math.abs((s.frameRate||0) - f) < 0.8;
+    }catch{ return false; }
+  }
+
+  async function findMaxFps(){
+    if(!videoTrack){ setStatus('Nejprve spusť náhled.', 'warn'); return; }
+    setStatus('Hledám maximum FPS…','warn');
+    // pokus shora dolů
+    const descending = [...FPS_CANDIDATES].sort((a,b)=>b-a);
+    for(const f of descending){
+      if(await testExactFps(f)){
+        setStatus(`Nalezeno maximum ≈ ${f} fps (v tomto režimu).`, 'ok');
+        // přidej do nabídky a vyber
+        ensureFpsInSelect(f);
+        els.fpsSel.value = String(f);
+        updateLiveInfo();
+        return;
+      }
+    }
+    setStatus('Max FPS: nic z testovaných neprošlo, ponechávám Auto.', 'warn');
+    els.fpsSel.value='auto';
+  }
+
+  function ensureFpsInSelect(f){
+    if(!Array.from(els.fpsSel.options).some(o=>+o.value===f)){
+      const o=document.createElement('option'); o.value=String(f); o.textContent=String(f);
+      els.fpsSel.appendChild(o);
     }
   }
 
@@ -403,7 +445,21 @@
   els.apply.addEventListener('click', startOrUpdate);
   els.resolution.addEventListener('change', ()=>{ els.customRes.style.display = els.resolution.value==='custom' ? 'grid' : 'none'; });
   els.fpsSel.addEventListener('change', ()=> setStatus('Změna FPS připravena — stiskni „Spustit / Aktualizovat náhled“.','warn'));
-  els.exposure.addEventListener('input', applyExposure);
+  els.testCustom.addEventListener('click', async ()=>{
+    const f = Number(els.fpsCustom.value);
+    if(!f) return;
+    if(!videoTrack){ setStatus('Nejprve spusť náhled.','warn'); return; }
+    setStatus(`Testuji ${f} fps…`,'warn');
+    const ok = await testExactFps(f);
+    if(ok){ ensureFpsInSelect(f); els.fpsSel.value=String(f); setStatus(`OK — ${f} fps funguje v tomto režimu.`, 'ok'); updateLiveInfo(); }
+    else { setStatus(`Neprošlo — ${f} fps v tomto režimu nedostupné. Zkus „Preferovat max FPS“.`, 'err'); }
+  });
+  els.findMax.addEventListener('click', findMaxFps);
+  els.exposure.addEventListener('input', async ()=>{
+    // při „prefer max“ expozici neovládáme
+    if(els.preferMaxFps.checked) return;
+    await applyExposure();
+  });
   els.recStart.addEventListener('click', startRecording);
   els.recStop.addEventListener('click', stopRecording);
 
