@@ -1,5 +1,5 @@
 // service-worker.js
-const CACHE_VERSION = 'v2.0.0';
+const CACHE_VERSION = 'v3.0.0';
 const CACHE_NAME = `video-recorder-${CACHE_VERSION}`;
 
 
