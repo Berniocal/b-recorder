@@ -13,9 +13,10 @@
   h1{margin:0 0 6px;font-size:20px}
   label{display:block;font-size:13px;color:var(--muted);margin:10px 0 6px}
   select,input,button{width:100%;background:#0c1a32;color:var(--text);border:1px solid #1f2a44;border-radius:10px;padding:10px 12px}
-  input[type=range]{padding:0}
+  input[type=range]{padding:0;height:36px}
   .grid{display:grid;gap:10px}
   .g2{grid-template-columns:1fr 1fr}
+  .g3{grid-template-columns:1fr 1fr 1fr}
   .row{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:end}
   .btn{cursor:pointer;border:none}
   .btn.primary{background:var(--accent)}
@@ -28,6 +29,7 @@
   .right{justify-content:flex-end}
   .ok{color:#86efac}.warn{color:#fbbf24}.err{color:#f87171}
   .mono{font-family:ui-monospace,Consolas,monospace}
+  .inline{display:flex;gap:8px;align-items:center}
 </style>
 </head>
 <body>
@@ -55,17 +57,14 @@
       </div>
 
       <div class="grid g2">
-        <div>
-          <label for="customRes" class="hint">Vlastní rozlišení</label>
-          <div class="grid g2" id="customRes" style="display:none">
-            <div>
-              <label for="w">Šířka [px]</label>
-              <input id="w" type="number" min="160" step="1" value="1920" />
-            </div>
-            <div>
-              <label for="h">Výška [px]</label>
-              <input id="h" type="number" min="120" step="1" value="1080" />
-            </div>
+        <div class="grid g2" id="customRes" style="display:none">
+          <div>
+            <label for="w">Šířka [px]</label>
+            <input id="w" type="number" min="160" step="1" value="1920" />
+          </div>
+          <div>
+            <label for="h">Výška [px]</label>
+            <input id="h" type="number" min="120" step="1" value="1080" />
           </div>
         </div>
 
@@ -82,7 +81,11 @@
         <div>
           <label for="exposure">Délka expozice <span id="expLabel" class="hint">(zjišťuji podporu…)</span></label>
           <input id="exposure" type="range" min="0" max="0" step="1" value="0" disabled />
-          <div class="hint" id="expHint">Zobrazuje se jako fotografické „časy“ (např. 1/1000 s).</div>
+          <div class="inline" style="margin-top:8px">
+            <input id="expInput" type="text" placeholder="např. 1/1000, 0.005, 5 ms" disabled />
+            <button id="expSet" class="btn" disabled>Nastavit</button>
+          </div>
+          <div class="hint" id="expHint">Zadávej jako „1/1000“, „0.005“, „5 ms“, „1/50 s“…</div>
         </div>
         <div style="align-self:end">
           <button id="apply" class="btn">✔️ Potvrdit nastavení</button>
@@ -113,7 +116,8 @@
       </div>
       <div id="downloads" class="flex" style="margin-top:8px;flex-wrap:wrap"></div>
     </div>
-  </div>
+
+    </div>
 
 <script>
 (async function(){
@@ -128,6 +132,8 @@
     exposure: document.getElementById('exposure'),
     expLabel: document.getElementById('expLabel'),
     expHint: document.getElementById('expHint'),
+    expInput: document.getElementById('expInput'),
+    expSet: document.getElementById('expSet'),
     apply: document.getElementById('apply'),
     video: document.getElementById('video'),
     recStart: document.getElementById('recStart'),
@@ -147,26 +153,44 @@
   let timerInt=null, sizeBytes=0, imageCapture=null;
 
   const isSecure = window.isSecureContext === true;
-  const COMMON_FPS = [15, 24, 25, 30, 48, 50, 60, 90, 100, 120, 144, 200, 240, 300, 400, 480, 600, 720, 960, 1000];
+  const COMMON_FPS = [15, 24, 25, 30, 48, 50, 60, 90, 100, 120, 144, 200, 240];
 
   function log(msg){ els.log.textContent += `${msg}\n`; }
   function fmtSize(b){ return (b/1048576).toFixed(2)+' MB'; }
   function setStatus(text,cls='ok'){ els.status.textContent=text; els.status.className=`mono ${cls}`; }
 
-  // --- Expozice: formátování jako „1/1000 s“ nebo „2,0 s“ ---
+  // ---- Expozice: formátování/parsování ----
+  let exposureUnit = 's'; // 's' | 'ms'
+  function toSec(v){ return exposureUnit==='ms' ? (v/1000) : v; }
+  function fromSec(sec){ return exposureUnit==='ms' ? (sec*1000) : sec; }
+
   function shutterFromSeconds(sec){
     if(!isFinite(sec) || sec<=0) return '–';
-    if(sec >= 1){
-      return `${sec.toFixed(1).replace('.', ',')} s`;
-    }
+    if(sec >= 1){ return `${sec.toFixed(1).replace('.', ',')} s`; }
     const denom = Math.round(1/sec);
     return `1/${denom} s`;
   }
 
-  // Rozhodnutí jednotek expozice (některé implementace udávají ms)
-  let exposureUnit = 's'; // 's' | 'ms'
-  function toSec(v){ return exposureUnit==='ms' ? (v/1000) : v; }
-  function fromSec(sec){ return exposureUnit==='ms' ? (sec*1000) : sec; }
+  // přijímá: "1/1000", "0.005", "5 ms", "1/50 s", "10ms"
+  function parseShutter(str){
+    if(!str) return NaN;
+    const s = str.trim().toLowerCase().replace(',', '.');
+    // zlomek 1/xxx
+    const mFrac = s.match(/^(\d+)\s*\/\s*(\d+)\s*(s)?$/i);
+    if(mFrac){
+      const a = parseFloat(mFrac[1]), b = parseFloat(mFrac[2]);
+      if(b>0) return a/b; // v sekundách
+    }
+    // s/ms s jednotkou
+    const mMs = s.match(/^([\d.]+)\s*ms$/);
+    if(mMs){ return parseFloat(mMs[1]) / 1000; }
+    const mS = s.match(/^([\d.]+)\s*s$/);
+    if(mS){ return parseFloat(mS[1]); }
+    // čisté číslo → sekundy
+    const num = parseFloat(s);
+    if(isFinite(num)) return num; // sekundy
+    return NaN;
+  }
 
   async function listCameras(){
     try{
@@ -212,8 +236,8 @@
       videoTrack = stream.getVideoTracks()[0];
       try{ imageCapture = new ImageCapture(videoTrack); }catch{ imageCapture=null; }
 
-      await populateFpsOptions();   // jen z capabilities
-      await updateExposureCapabilities();
+      await populateFpsOptions();       // jen podle capabilities
+      await updateExposureCapabilities();// nastav min/max slideru dle kamery
 
       await listCameras();
       updateLiveInfo();
@@ -234,18 +258,14 @@
   }
 
   async function populateFpsOptions(){
-    // Naplň jen podle capabilities.range (žádné testování)
     const prev = els.fpsSel.value;
     els.fpsSel.innerHTML = '<option value="auto">Auto</option>';
-
     let supported = [];
     try{
       const caps = videoTrack?.getCapabilities?.();
       if(caps?.frameRate && Number.isFinite(caps.frameRate.min) && Number.isFinite(caps.frameRate.max)){
         const {min,max} = caps.frameRate;
-        // vyfiltruj standardní snímkové frekvence v rozmezí
         supported = COMMON_FPS.filter(f => f >= Math.ceil(min-0.5) && f <= Math.floor(max+0.5));
-        // když kamera vrací třeba min=0, max=1000 a nic mezi, necháme aspoň běžné volby
         if(!supported.length){ supported = [24,25,30,50,60]; }
         els.fpsHint.textContent = `Rozsah kamery: ${min.toFixed(1)}–${max.toFixed(1)} fps`;
       }else{
@@ -255,22 +275,17 @@
       els.fpsHint.textContent = 'Detekce FPS selhala — k dispozici jen Auto.';
       log('populateFpsOptions: '+e.message);
     }
-
     supported.forEach(f=>{
       const o=document.createElement('option'); o.value=String(f); o.textContent=String(f); els.fpsSel.appendChild(o);
     });
-
-    // pokus o zachování volby
     if (Array.from(els.fpsSel.options).some(o=>o.value===prev)) els.fpsSel.value=prev;
   }
 
   async function updateExposureCapabilities(){
     if(!videoTrack) return;
-    // Zkus MediaTrackCapabilities nejdřív
     const caps = videoTrack.getCapabilities?.() || {};
     let expCap = caps.exposureTime;
 
-    // Fallback: ImageCapture.getPhotoCapabilities()
     if(!expCap && window.ImageCapture && imageCapture?.getPhotoCapabilities){
       try{
         const pc = await imageCapture.getPhotoCapabilities();
@@ -281,39 +296,42 @@
     }
 
     if(expCap){
-      // Urči jednotku (hrubě): pokud maxima >> 5, ber ms
+      // Rozlišení jednotky: pokud max >> 5, bývají to ms
       exposureUnit = (expCap.max > 5) ? 'ms' : 's';
 
       els.exposure.disabled=false;
+      els.expInput.disabled=false;
+      els.expSet.disabled=false;
+
       els.exposure.min = expCap.min;
       els.exposure.max = expCap.max;
       els.exposure.step = expCap.step || 1;
 
-      // Nastav popisek rozsahu „foto“ stylem
-      const minS = shutterFromSeconds(toSec(expCap.max)); // pozor: větší číslo = delší čas → menší zlomek
+      // Popisek rozsahu „foto“ stylem (pozor: min/max jsou v jednotce driveru)
+      const minS = shutterFromSeconds(toSec(expCap.max));
       const maxS = shutterFromSeconds(toSec(expCap.min));
       els.expLabel.textContent = `(rozsah ${minS} … ${maxS})`;
 
-      // zkus manuální režim
       try{ await videoTrack.applyConstraints({ advanced:[{ exposureMode:'manual' }] }); }catch{}
-
       const s = videoTrack.getSettings?.() || {};
       const cur = (s.exposureTime!==undefined) ? s.exposureTime : expCap.min;
       els.exposure.value = cur;
       els.curExp.textContent = shutterFromSeconds(toSec(cur));
+      els.expInput.value = (toSec(cur) >= 1) ? `${toSec(cur).toFixed(1)} s` : `1/${Math.round(1/toSec(cur))}`;
     }else{
       els.exposure.disabled=true;
+      els.expInput.disabled=true;
+      els.expSet.disabled=true;
       els.expLabel.textContent='(expozice není podporována na této kameře/prohlížeči)';
       els.curExp.textContent='–';
     }
   }
 
-  async function applyExposure(){
+  async function applyExposureRaw(rawValue){
     if(!videoTrack || els.exposure.disabled) return;
-    const raw = parseFloat(els.exposure.value);
     try{
-      await videoTrack.applyConstraints({ advanced:[{exposureMode:'manual', exposureTime: raw}] });
-      els.curExp.textContent = shutterFromSeconds(toSec(raw));
+      await videoTrack.applyConstraints({ advanced:[{exposureMode:'manual', exposureTime: rawValue}] });
+      els.curExp.textContent = shutterFromSeconds(toSec(rawValue));
       setStatus('Expozice nastavena','ok');
     }catch(e){
       setStatus('Expozici nelze nastavit: '+e.message,'err');
@@ -321,7 +339,32 @@
     }
   }
 
-  // --- Nahrávání (bez volby formátu; zkusíme vp8, jinak default) ---
+  // --- Handlery expozice ---
+  els.exposure.addEventListener('input', async ()=>{
+    const raw = parseFloat(els.exposure.value);
+    els.curExp.textContent = shutterFromSeconds(toSec(raw));
+    els.expInput.value = (toSec(raw) >= 1) ? `${toSec(raw).toFixed(1)} s` : `1/${Math.round(1/toSec(raw))}`;
+    await applyExposureRaw(raw);
+  });
+
+  els.expSet.addEventListener('click', async ()=>{
+    const sec = parseShutter(els.expInput.value);
+    if(!isFinite(sec) || sec<=0){ setStatus('Neplatný formát času expozice.', 'err'); return; }
+    const raw = fromSec(sec);
+    // omez do min–max kamery
+    const min = parseFloat(els.exposure.min);
+    const max = parseFloat(els.exposure.max);
+    const clamped = Math.max(min, Math.min(max, raw));
+    els.exposure.value = clamped;
+    els.curExp.textContent = shutterFromSeconds(toSec(clamped));
+    await applyExposureRaw(clamped);
+  });
+
+  els.expInput.addEventListener('keydown', (e)=>{
+    if(e.key==='Enter'){ e.preventDefault(); els.expSet.click(); }
+  });
+
+  // --- Nahrávání ---
   function startTimer(){
     const start=Date.now(); sizeBytes=0;
     clearInterval(timerInt);
@@ -373,15 +416,13 @@
     setStatus('Zastaveno','ok');
   }
 
-  // UI
+  // UI + start
   els.apply.addEventListener('click', startOrUpdate);
   els.resolution.addEventListener('change', ()=>{ els.customRes.style.display = els.resolution.value==='custom' ? 'grid' : 'none'; });
   els.fpsSel.addEventListener('change', ()=> setStatus('Změna FPS připravena — stiskni „Potvrdit nastavení“.','warn'));
-  els.exposure.addEventListener('input', applyExposure);
   els.recStart.addEventListener('click', startRecording);
   els.recStop.addEventListener('click', stopRecording);
 
-  // Start – jen příprava UI
   if(!isSecure){ setStatus('Otevři přes HTTPS / localhost. Z „content://“ nebo „file://“ kamera nepojede.','err'); }
   else { setStatus('Klepni na „Potvrdit nastavení“ a povol kameru.','warn'); }
 
